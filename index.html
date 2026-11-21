@@ -51,6 +51,13 @@
   .seg[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
   .toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
   .toggle input { accent-color: var(--scl); width: 15px; height: 15px; margin: 0; cursor: pointer; }
+  .bar-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .ghost {
+    font: inherit; font-size: 13px; padding: 5px 11px; border-radius: 999px;
+    border: 1px solid var(--line); background: transparent; color: var(--muted); cursor: pointer;
+    transition: color .12s, border-color .12s;
+  }
+  .ghost:hover { color: var(--fg); border-color: var(--muted); }
   #wave { margin-top: 4px; }
   #wave svg { display: block; width: 100%; height: auto; }
   .q { margin-top: 18px; }
@@ -83,7 +90,10 @@
   <div class="panel">
     <div class="bar">
       <div class="segs" id="segs" role="group" aria-label="选择波形片段"></div>
-      <label class="toggle"><input type="checkbox" id="quizmode"> 出题模式：只看波形</label>
+      <div class="bar-right">
+        <label class="toggle"><input type="checkbox" id="quizmode"> 出题模式：只看波形</label>
+        <button type="button" class="ghost" id="reset">清除作答</button>
+      </div>
     </div>
     <div id="wave"></div>
 
@@ -443,6 +453,14 @@
     state.hide = e.target.checked;
     updateTabs();
     renderWave(true);
+    save();
+  });
+
+  document.getElementById('reset').addEventListener('click', function () {
+    state.picked = {};
+    renderQuestion();
+    fbEl.textContent = '已清除全部答题记录';
+    fbEl.className = 'fb';
     save();
   });
 
