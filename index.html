@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>I²C 波形读图训练</title>
+<style>
+  :root {
+    --bg: #fbfaf7;
+    --fg: #1b1a17;
+    --muted: #6b675f;
+    --line: #e3dfd6;
+    --panel: #ffffff;
+    --scl: #2f6fdb;
+    --sda: #cf6a20;
+    --ok: #187a4b;
+    --bad: #b3352c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #15151a;
+      --fg: #eae8e3;
+      --muted: #9b978e;
+      --line: #2f2f36;
+      --panel: #1c1c22;
+      --scl: #74a8ff;
+      --sda: #f0a163;
+      --ok: #5fd39b;
+      --bad: #ff8b80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 6px; letter-spacing: .01em; }
+  .sub { margin: 0 0 24px; color: var(--muted); font-size: 13.5px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .segs { display: flex; flex-wrap: wrap; gap: 7px; }
+  .seg {
+    font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 999px;
+    border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+  }
+  .seg:hover { border-color: var(--muted); }
+  .seg[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+  .toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted); cursor: pointer; user-select: none; }
+  .toggle input { accent-color: var(--scl); width: 15px; height: 15px; margin: 0; cursor: pointer; }
+  #wave { margin-top: 4px; }
+  #wave svg { display: block; width: 100%; height: auto; }
+  .q { margin-top: 18px; }
+  .q p.ask { margin: 0 0 12px; font-weight: 600; font-size: 15px; }
+  .opts { display: grid; gap: 8px; }
+  .opt {
+    display: flex; gap: 10px; align-items: flex-start; padding: 9px 12px;
+    border: 1px solid var(--line); border-radius: 10px; cursor: pointer; font-size: 14px;
+    transition: border-color .12s, background .12s;
+  }
+  .opt:hover { border-color: var(--muted); }
+  .opt input { accent-color: var(--scl); margin: 3px 0 0; width: 15px; height: 15px; flex: none; cursor: pointer; }
+  .opt:has(input:checked) { border-color: var(--scl); background: color-mix(in srgb, var(--scl) 9%, transparent); }
+  .fb { margin: 12px 0 0; font-size: 13.5px; min-height: 1.6em; }
+  .fb.ok { color: var(--ok); }
+  .fb.bad { color: var(--bad); }
+  .note { margin: 22px 0 0; color: var(--muted); font-size: 12.5px; }
+  @media (max-width: 520px) {
+    .wrap { padding: 20px 14px 48px; }
+    .panel { padding: 14px; }
+    .bar { gap: 8px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>I²C 波形读图训练</h1>
+  <p class="sub">AHT20 · 7 位地址 0x38 · 触发测量命令 0xAC。逐段看 SCL / SDA，然后回答下面的问题。</p>
+
+  <div class="panel">
+    <div class="bar">
+      <div class="segs" id="segs" role="group" aria-label="选择波形片段"></div>
+      <label class="toggle"><input type="checkbox" id="quizmode"> 出题模式：只看波形</label>
+    </div>
+    <div id="wave"></div>
+
+    <div class="q">
+      <p class="ask" id="ask"></p>
+      <div class="opts" role="radiogroup" aria-labelledby="ask" id="opts"></div>
+      <p class="fb" id="fb" aria-live="polite"></p>
+    </div>
+  </div>
+
+  <p class="note">线上的圆点标记采样时刻：SDA 只在 SCL 低电平期间变化，在 SCL 高电平中间被读走。</p>
+</div>
+
+<script>
+(function () {
+  var LEAD = 0.5, TAIL = 0.45;
+
+  var SCENES = [
+    {
+      tab: '① 起始', short: '①',
+      desc: 'SCL 为高电平时 SDA 由高变低，随后出现两个数据位',
+      pre: { scl: 1, sda: 1 },
+      cells: [
+        { k: 'start', lab: 'S', strong: true },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' }
+      ],
+      groups: [],
+      q: 'SDA 在 SCL 保持高电平期间由高跳低，这个跳变表示什么？',
+      opts: [
+        '起始条件 S：总线从空闲进入一次传输',
+        '停止条件 P：本次传输结束',
+        '第 1 个数据位为 0',
+        '从机拉低 SDA，表示 ACK'
+      ],
+      answer: 0,
+      hint: '先看这条跳变发生时 SCL 是高还是低——数据位只会在 SCL 低电平期间变化。',
+      fb: 'SCL 为高时 SDA 下降 = 起始 S；SCL 为高时 SDA 上升 = 停止 P。紧跟着的两个数据位，跳变都发生在 SCL 低电平期间，这就是两者的区别。'
+    },
+    {
+      tab: '② 地址+写', short: '②',
+      desc: '8 位数据 0111 0000，第 9 个时钟 SDA 为低',
+      pre: { scl: 0, sda: 0 },
+      cells: [
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: 'ACK', strong: true }
+      ],
+      groups: [{ from: 0, to: 7, text: '地址 0x38 + 写 = 0x70' }],
+      q: '第一个字节在线上是 0 1 1 1 0 0 0 0，它表示什么？',
+      qQuiz: '先自己把这 8 位读出来：地址是多少，读还是写？',
+      opts: [
+        '7 位地址 0x38，读写位 0（写）',
+        '7 位地址 0x70，读写位 0（写）',
+        '7 位地址 0x38，读写位 1（读）',
+        '命令 0x70，写一个寄存器'
+      ],
+      answer: 0,
+      hint: '前 7 位才是地址，第 8 位是读写位。把前 7 位单独取出来算一下。',
+      fb: 'MSB 先发：前 7 位 0111000 = 0x38 是设备地址，第 8 位 0 是 R/W。手册里的“写地址 0x70、读地址 0x71”是把地址左移一位再加读写位得到的，不能把 0x70 当成 7 位地址。'
+    },
+    {
+      tab: '③ 命令 0xAC', short: '③',
+      desc: '8 位数据 1010 1100，第 9 个时钟 SDA 为低',
+      pre: { scl: 0, sda: 0 },
+      cells: [
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: 'ACK', strong: true }
+      ],
+      groups: [{ from: 0, to: 7, text: '命令 0xAC：触发测量' }],
+      q: '8 位是 1 0 1 0 1 1 0 0，第 9 个时钟 SDA 为低。这段在做什么？',
+      qQuiz: '先读出这 8 位，再看第 9 个时钟：这段在做什么？',
+      opts: [
+        '主机向 0x38 写入命令 0xAC，从机回 ACK',
+        '从机向主机发送数据 0xAC',
+        '从机没有响应（NACK），命令被丢弃',
+        '重复起始条件，准备读数据'
+      ],
+      answer: 0,
+      hint: '第 9 个时钟 SDA 被拉低，说明有人在应答。写操作里，是谁负责拉低 SDA？',
+      fb: '1010 1100 = 0xAC，触发一次测量的命令。第 9 个时钟 SDA 被从机拉低，表示命令已收到（ACK）。写操作里的 ACK 永远由从机发出。'
+    },
+    {
+      tab: '④ 读地址', short: '④',
+      desc: '起始条件后 8 位数据 0111 0001，第 9 个时钟 SDA 为低',
+      pre: { scl: 1, sda: 1 },
+      cells: [
+        { k: 'start', lab: 'S', strong: true },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 0, lab: 'ACK', strong: true }
+      ],
+      groups: [{ from: 1, to: 8, text: '地址 0x38 + 读 = 0x71' }],
+      q: '这一帧第一个字节变成 0 1 1 1 0 0 0 1，和前面的地址帧相比改变了什么？',
+      qQuiz: '和前面的地址帧相比，这一帧只改了一位，是哪一位？',
+      opts: [
+        '只有最低位的读写位变成 1，主机改为读',
+        '设备地址换成了 0x39',
+        '命令从 0xAC 变成了 0x71',
+        '地址后面多了一个时钟周期'
+      ],
+      answer: 0,
+      hint: '把两个字节一位一位对齐比较，看看究竟哪一位翻转了。',
+      fb: '地址位一位都没变（0111000 = 0x38），只有最低位从 0 变 1：写 0x70 → 读 0x71。从下一个字节起 SDA 交给从机驱动，第 9 个时钟的应答也改由主机发出。'
+    },
+    {
+      tab: '⑤ 数据+停止', short: '⑤',
+      desc: '数据字节 0011 0011，第 9 个时钟 SDA 保持高（NACK），随后 SDA 在 SCL 高时上升',
+      pre: { scl: 0, sda: 0 },
+      cells: [
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 0, lab: '0' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: '1' },
+        { k: 'bit', v: 1, lab: 'NACK', strong: true },
+        { k: 'stop', lab: 'P', strong: true }
+      ],
+      groups: [{ from: 0, to: 7, text: '数据字节 0x33' }],
+      q: '最后一个字节之后，第 9 个时钟 SDA 保持高电平（NACK），紧接着是停止条件。这个 NACK 是谁发出的？',
+      qQuiz: '最后一个字节的第 9 个时钟 SDA 没被拉低，随后出现停止条件。这个 NACK 是谁发出的？',
+      opts: [
+        '主机：已经收完，告诉从机不用再发了',
+        '从机：它已经没有数据可以发送',
+        '主机：表示这一字节接收成功',
+        '没有人在驱动 SDA，属于总线错误'
+      ],
+      answer: 0,
+      hint: '规则是“谁接收谁应答”。这一帧里，谁是接收方？',
+      fb: '谁接收谁应答：读操作里主机是接收方，所以 ACK / NACK 都由主机发出。主机回 NACK 再发停止条件，就是一次正常读取的收尾。'
+    }
+  ];
+
+  var KEY = 'i2c-wave-quiz-v1';
+  var state = { scene: 0, hide: false, picked: {} };
+
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (saved) {
+      if (typeof saved.scene === 'number' && saved.scene >= 0 && saved.scene < SCENES.length) state.scene = saved.scene;
+      if (saved.hide === true) state.hide = true;
+      if (saved.picked && typeof saved.picked === 'object') state.picked = saved.picked;
+    }
+  } catch (e) {}
+
+  function save() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify({ scene: state.scene, hide: state.hide, picked: state.picked }));
+    } catch (e) {}
+  }
+
+  function buildSignals(s, total) {
+    var scl = [[0, s.pre.scl]];
+    var sda = [[0, s.pre.sda]];
+    var x = LEAD;
+    for (var i = 0; i < s.cells.length; i++) {
+      var c = s.cells[i];
+      if (c.k === 'start') {
+        scl.push([x + 0.03, 1]);
+        sda.push([x + 0.50, 0]);
+        scl.push([x + 0.97, 0]);
+      } else if (c.k === 'stop') {
+        sda.push([x + 0.08, 0]);
+        scl.push([x + 0.30, 1]);
+        sda.push([x + 0.70, 1]);
+      } else {
+        scl.push([x + 0.03, 0]);
+        scl.push([x + 0.32, 1]);
+        scl.push([x + 0.86, 0]);
+        sda.push([x + 0.14, c.v]);
+      }
+      x += 1;
+    }
+    scl.push([total, scl[scl.length - 1][1]]);
+    sda.push([total, sda[sda.length - 1][1]]);
+    return { scl: scl, sda: sda };
+  }
+
+  function bpsToPath(bps, yHi, yLo, X) {
+    var d = '', prevY = 0;
+    for (var i = 0; i < bps.length; i++) {
+      var bx = bps[i][0];
+      var nx = (i + 1 < bps.length) ? bps[i + 1][0] : bx;
+      var y = bps[i][1] ? yHi : yLo;
+      var px = X(bx).toFixed(1);
+      if (i === 0) d += 'M' + px + ' ' + y;
+      else d += 'L' + px + ' ' + prevY + 'L' + px + ' ' + y;
+      if (nx > bx) d += 'L' + X(nx).toFixed(1) + ' ' + y;
+      prevY = y;
+    }
+    return d;
+  }
+
+  var holder = document.getElementById('wave');
+  var segsEl = document.getElementById('segs');
+  var askEl = document.getElementById('ask');
+  var optsEl = document.getElementById('opts');
+  var fbEl = document.getElementById('fb');
+  var modeEl = document.getElementById('quizmode');
+  var lastW = -1;
+
+  function renderWave(force) {
+    var w = Math.max(300, Math.round(holder.getBoundingClientRect().width || 640));
+    if (!force && w === lastW) return;
+    lastW = w;
+
+    var s = SCENES[state.scene];
+    var n = s.cells.length;
+    var total = LEAD + n + TAIL;
+    var padL = 46, padR = 12;
+    var plotW = w - padL - padR;
+    var SCL_HI = 42, SCL_LO = 63, SDA_HI = 99, SDA_LO = 120, H = 150;
+
+    function X(x) { return padL + (x / total) * plotW; }
+
+    var sig = buildSignals(s, total);
+    var dScl = bpsToPath(sig.scl, SCL_HI, SCL_LO, X);
+    var dSda = bpsToPath(sig.sda, SDA_HI, SDA_LO, X);
+
+    var out = [];
+    out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + w + '" height="' + H +
+      '" viewBox="0 0 ' + w + ' ' + H + '" role="img" aria-label="' + s.desc + '">');
+
+    for (var i = 0; i <= n; i++) {
+      var gx = X(LEAD + i).toFixed(1);
+      out.push('<line x1="' + gx + '" y1="26" x2="' + gx + '" y2="128" stroke="var(--line)" stroke-width="1"/>');
+    }
+
+    out.push('<text x="' + (padL - 8) + '" y="57" text-anchor="end" font-size="12" fill="var(--fg)">SCL</text>');
+    out.push('<text x="' + (padL - 8) + '" y="114" text-anchor="end" font-size="12" fill="var(--fg)">SDA</text>');
+
+    out.push('<path d="' + dScl + '" fill="none" stroke="var(--scl)" stroke-width="2" stroke-linejoin="round"/>');
+    out.push('<path d="' + dSda + '" fill="none" stroke="var(--sda)" stroke-width="2" stroke-linejoin="round"/>');
+
+    if (!state.hide) {
+      for (var g = 0; g < s.groups.length; g++) {
+        var grp = s.groups[g];
+        var x0 = X(LEAD + grp.from), x1 = X(LEAD + grp.to + 1);
+        out.push('<text x="' + ((x0 + x1) / 2).toFixed(1) + '" y="13" text-anchor="middle" font-size="12" fill="var(--muted)">' + grp.text + '</text>');
+        out.push('<line x1="' + (x0 + 3).toFixed(1) + '" y1="19" x2="' + (x1 - 3).toFixed(1) + '" y2="19" stroke="var(--line)" stroke-width="1"/>');
+      }
+
+      for (var c = 0; c < s.cells.length; c++) {
+        var cell = s.cells[c];
+        out.push('<text x="' + X(LEAD + c + 0.5).toFixed(1) + '" y="139" text-anchor="middle" font-size="12" fill="var(--fg)"' +
+          (cell.strong ? ' font-weight="600"' : '') + '>' + cell.lab + '</text>');
+        if (cell.k === 'bit') {
+          out.push('<circle cx="' + X(LEAD + c + 0.59).toFixed(1) + '" cy="' + (cell.v ? SDA_HI : SDA_LO) +
+            '" r="2.5" fill="var(--sda)"/>');
+        }
+      }
+    }
+
+    out.push('</svg>');
+    holder.innerHTML = out.join('');
+  }
+
+  function updateTabs() {
+    for (var i = 0; i < segsEl.children.length; i++) {
+      segsEl.children[i].textContent = state.hide ? SCENES[i].short : SCENES[i].tab;
+      segsEl.children[i].setAttribute('aria-pressed', i === state.scene ? 'true' : 'false');
+    }
+  }
+
+  function updateFeedback() {
+    var s = SCENES[state.scene];
+    var pick = state.picked[state.scene];
+    if (pick === undefined || pick === null) {
+      fbEl.textContent = '';
+      fbEl.className = 'fb';
+      return;
+    }
+    if (pick === s.answer) {
+      fbEl.textContent = '✓ ' + s.fb;
+      fbEl.className = 'fb ok';
+    } else {
+      fbEl.textContent = '✗ ' + s.hint;
+      fbEl.className = 'fb bad';
+    }
+  }
+
+  function renderQuestion() {
+    var s = SCENES[state.scene];
+    askEl.textContent = (state.hide && s.qQuiz) ? s.qQuiz : s.q;
+    optsEl.innerHTML = '';
+
+    for (var i = 0; i < s.opts.length; i++) {
+      (function (idx) {
+        var lab = document.createElement('label');
+        lab.className = 'opt';
+
+        var inp = document.createElement('input');
+        inp.type = 'radio';
+        inp.name = 'opt';
+        inp.value = String(idx);
+        inp.id = 'opt-' + idx;
+        inp.checked = state.picked[state.scene] === idx;
+        inp.addEventListener('change', function () {
+          state.picked[state.scene] = idx;
+          updateFeedback();
+          save();
+        });
+
+        var span = document.createElement('span');
+        span.textContent = s.opts[idx];
+
+        lab.appendChild(inp);
+        lab.appendChild(span);
+        optsEl.appendChild(lab);
+      })(i);
+    }
+    updateFeedback();
+  }
+
+  function select(i) {
+    state.scene = i;
+    updateTabs();
+    renderWave(true);
+    renderQuestion();
+    save();
+  }
+
+  for (var t = 0; t < SCENES.length; t++) {
+    (function (idx) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg';
+      b.addEventListener('click', function () { select(idx); });
+      segsEl.appendChild(b);
+    })(t);
+  }
+
+  modeEl.checked = state.hide;
+  modeEl.addEventListener('change', function (e) {
+    state.hide = e.target.checked;
+    updateTabs();
+    renderWave(true);
+    save();
+  });
+
+  if (window.ResizeObserver) {
+    new ResizeObserver(function () { renderWave(false); }).observe(holder);
+  }
+
+  updateTabs();
+  renderWave(true);
+  renderQuestion();
+})();
+</script>
+</body>
+</html>
